@@ -1,5 +1,6 @@
 /* docsify-model-viewer v1 */
 (function () {
+  var BABYLON_VERSION = "8.46.2";
   var DEFAULTS = {
     enabled: true,
     formats: ["stl", "gltf", "glb", "obj", "ply", "babylon"],
@@ -10,8 +11,10 @@
     lazy: "visible",
     downloadLabel: "Download",
     showOpen: false,
-    shaderRepository: "https://cdn.jsdelivr.net/gh/BabylonJS/Babylon.js@v8.46.2/packages/dev/core/src/Shaders/",
-    shaderRepositoryWgsl: "https://cdn.jsdelivr.net/gh/BabylonJS/Babylon.js@v8.46.2/packages/dev/core/src/ShadersWGSL/",
+    runtimeUrls: ["./vendor/babylon-viewer.esm.min.js"],
+    silent: true,
+    shaderRepository: "https://cdn.jsdelivr.net/gh/BabylonJS/Babylon.js@v" + BABYLON_VERSION + "/packages/dev/core/src/Shaders/",
+    shaderRepositoryWgsl: "https://cdn.jsdelivr.net/gh/BabylonJS/Babylon.js@v" + BABYLON_VERSION + "/packages/dev/core/src/ShadersWGSL/",
     gltf: {
       loadNodeAnimations: false
     },
@@ -19,14 +22,11 @@
     debug: false
   };
 
-  var RUNTIME_MODULE_URLS = [
-    "https://cdn.jsdelivr.net/npm/@babylonjs/viewer@8.46.2/dist/babylon-viewer.esm.min.js",
-    "https://cdn.jsdelivr.net/npm/@babylonjs/viewer/+esm",
-    "https://esm.sh/@babylonjs/viewer?target=es2022"
-  ];
+  var RUNTIME_MODULE_URLS = "https://cdn.jsdelivr.net/npm/@babylonjs/viewer@" + BABYLON_VERSION + "/dist/babylon-viewer.esm.min.js";
 
   var STATE = {
     observers: new Set(),
+    sharedObserver: null,
     instances: new Set(),
     runtimePromise: null,
     shaderPromise: null,
@@ -38,7 +38,10 @@
     loaderReady: false,
     loaderPromise: null,
     gltfPatchPromise: null,
-    gltfPatched: false
+    gltfPatched: false,
+    runtimeWarm: false,
+    configKey: null,
+    configCache: null
   };
 
   function logDebug(config, message, data) {
@@ -91,6 +94,9 @@
       ".dmv-load{cursor:pointer}" +
       ".dmv-aspect{position:relative;width:100%}" +
       ".dmv-aspect > .dmv-viewer{position:absolute;inset:0}" +
+      ".dmv-viewer babylon-viewer{width:100%;height:100%;--ui-foreground-color:var(--dmv-text);--ui-background-color:var(--dmv-action-bg);--ui-background-opacity:0.9}" +
+      "babylon-viewer::part(tool-bar){max-width:100%;flex-wrap:wrap;row-gap:6px;overflow-x:auto;scrollbar-width:thin}" +
+      "@media (max-width: 520px){babylon-viewer::part(tool-bar){font-size:0.82rem;padding:6px 8px;column-gap:6px}}" +
       ".dmv-block:fullscreen{width:100vw;height:100vh;margin:0;border-radius:0;padding:0;display:flex;flex-direction:column}" +
       ".dmv-block:fullscreen .dmv-header{padding:0.75rem 1rem;margin:0 0 0.5rem}" +
       ".dmv-block:fullscreen .dmv-status{padding:0 1rem 0.75rem;margin:0}" +
@@ -102,6 +108,13 @@
 
   function getConfig() {
     var base = (window.$docsify && window.$docsify.modelViewer) || {};
+    var key = null;
+    try {
+      key = JSON.stringify(base || {});
+    } catch (err) {
+      key = null;
+    }
+    if (STATE.configCache && key && STATE.configKey === key) return STATE.configCache;
     var config = Object.assign({}, DEFAULTS, base || {});
     config.formats = Array.isArray(config.formats)
       ? config.formats.map(function (f) {
@@ -116,6 +129,7 @@
     }
     if (typeof config.enabled !== "boolean") config.enabled = DEFAULTS.enabled;
     if (typeof config.showOpen !== "boolean") config.showOpen = DEFAULTS.showOpen;
+    if (typeof config.silent !== "boolean") config.silent = DEFAULTS.silent;
     if (typeof config.downloadLabel !== "string" || !config.downloadLabel) {
       config.downloadLabel = DEFAULTS.downloadLabel;
     }
@@ -125,8 +139,15 @@
     if (typeof config.shaderRepositoryWgsl !== "string" || !config.shaderRepositoryWgsl) {
       config.shaderRepositoryWgsl = DEFAULTS.shaderRepositoryWgsl;
     }
+    if (!Array.isArray(config.runtimeUrls)) {
+      config.runtimeUrls = DEFAULTS.runtimeUrls.slice();
+    }
     if (!config.gltf || typeof config.gltf !== "object") {
       config.gltf = DEFAULTS.gltf;
+    }
+    if (key) {
+      STATE.configKey = key;
+      STATE.configCache = config;
     }
     return config;
   }
@@ -205,7 +226,7 @@
     fullscreen.setAttribute("aria-label", "Toggle fullscreen");
     fullscreen.setAttribute("title", "Toggle fullscreen");
     fullscreen.innerHTML =
-      "<svg class=\"dmv-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"currentColor\" d=\"M7 3a1 1 0 0 0-1 1v4a1 1 0 1 0 2 0V5h3a1 1 0 0 0 0-2H7zm10 0a1 1 0 0 0-1 1v1a1 1 0 1 0 2 0V5h1a1 1 0 1 0 0-2h-2zm-9 13a1 1 0 0 0-1 1v2a1 1 0 1 0 2 0v-1h1a1 1 0 1 0 0-2H8zm9 0a1 1 0 0 0 0 2h1v1a1 1 0 1 0 2 0v-2a1 1 0 0 0-1-1h-2z\"/></svg>";
+      "<svg class=\"dmv-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path fill=\"currentColor\" d=\"M4 9V5a1 1 0 0 1 1-1h4a1 1 0 1 1 0 2H6v3a1 1 0 1 1-2 0zm10-4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v4a1 1 0 1 1-2 0V6h-3a1 1 0 0 1-1-1zM5 14a1 1 0 0 1 1 1v3h3a1 1 0 1 1 0 2H5a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zm14 0a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 1 1 0-2h3v-3a1 1 0 0 1 1-1z\"/></svg>";
     actions.appendChild(fullscreen);
 
     header.appendChild(titleEl);
@@ -271,6 +292,7 @@
   function ensureRuntime(config) {
     if (STATE.runtimePromise) return STATE.runtimePromise;
     if (customElements && customElements.get("babylon-viewer")) {
+      configureLogging(config, window.BABYLON);
       configureShaderRepository(config, window.BABYLON);
       configureLoaderOptions(config, window.BABYLON);
       STATE.runtimePromise = Promise.resolve();
@@ -278,7 +300,7 @@
     }
 
     STATE.runtimePromise = new Promise(function (resolve, reject) {
-      var modulePromise = tryImportModule(RUNTIME_MODULE_URLS);
+      var modulePromise = tryImportModule(getRuntimeUrls(config));
       if (modulePromise) {
         modulePromise
           .then(function (mod) {
@@ -292,17 +314,18 @@
             if (mod && mod.BABYLON && !window.BABYLON) {
               window.BABYLON = mod.BABYLON;
             }
+            configureLogging(config, mod && mod.BABYLON);
             configureShaderRepository(config, mod && mod.BABYLON);
             configureLoaderOptions(config, mod && mod.BABYLON);
             waitForViewerElement(resolve, reject);
           })
           .catch(function () {
-            loadRuntimeScript(resolve, reject);
+            loadRuntimeScript(resolve, reject, config);
           });
         return;
       }
 
-      loadRuntimeScript(resolve, reject);
+      loadRuntimeScript(resolve, reject, config);
     });
 
     STATE.runtimePromise.catch(function (err) {
@@ -314,24 +337,18 @@
   function tryImportModule(urls) {
     try {
       var importer = new Function("u", "return import(u);");
-      if (Array.isArray(urls)) {
-        return urls.reduce(function (prev, url) {
-          return prev.catch(function () {
-            return importer(url);
-          });
-        }, Promise.reject(new Error("No module URL")));
-      }
       return importer(urls);
     } catch (err) {
       return null;
     }
   }
 
-  function loadRuntimeScript(resolve, reject) {
+  function loadRuntimeScript(resolve, reject, config) {
     var existing = document.querySelector('script[data-dmv-runtime="babylon"]');
     if (existing) {
       existing.addEventListener("load", function () {
         tryRegisterFromGlobal();
+        configureLogging(getConfig(), window.BABYLON);
         configureShaderRepository(getConfig(), window.BABYLON);
         configureLoaderOptions(getConfig(), window.BABYLON);
         waitForViewerElement(resolve, reject);
@@ -343,11 +360,13 @@
     }
     var script = document.createElement("script");
     script.type = "module";
-    script.src = "https://cdn.jsdelivr.net/npm/@babylonjs/viewer@8.46.2/dist/babylon-viewer.esm.min.js";
+    var urls = getRuntimeUrls(config);
+    script.src = urls[urls.length - 1] || RUNTIME_MODULE_URLS;
     script.async = true;
     script.dataset.dmvRuntime = "babylon";
     script.onload = function () {
       tryRegisterFromGlobal();
+      configureLogging(getConfig(), window.BABYLON);
       configureShaderRepository(getConfig(), window.BABYLON);
       configureLoaderOptions(getConfig(), window.BABYLON);
       waitForViewerElement(resolve, reject);
@@ -356,6 +375,16 @@
       reject(new Error("Babylon viewer runtime failed to load."));
     };
     document.head.appendChild(script);
+  }
+
+  function getRuntimeUrls(config) {
+    var urls = [];
+    var local = config && Array.isArray(config.runtimeUrls) ? config.runtimeUrls : DEFAULTS.runtimeUrls;
+    local.forEach(function (url) {
+      if (url && typeof url === "string") urls.push(url);
+    });
+    urls.push(RUNTIME_MODULE_URLS);
+    return urls;
   }
 
   function waitForViewerElement(resolve, reject) {
@@ -412,6 +441,20 @@
     }
   }
 
+  function configureLogging(config, babylon) {
+    try {
+      var target = babylon || window.BABYLON;
+      if (!target || !target.Logger) return;
+      if (config && config.silent) {
+        target.Logger.LogLevels = target.Logger.NoneLogLevel || 0;
+        target.Logger.Log = function () {};
+        target.Logger.Warn = function () {};
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+
   function configureLoaderOptions(config, babylon) {
     return ensureLoaderOptionsAsync(config, babylon).then(function () {
       return ensureGltfAnimationPatch(config);
@@ -455,7 +498,7 @@
       }
 
       var importer = new Function("u", "return import(u);");
-      var sceneLoaderUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/core@8.46.2/Loading/sceneLoader.js/+esm";
+      var sceneLoaderUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/core@" + BABYLON_VERSION + "/Loading/sceneLoader.js/+esm";
       STATE.loaderPromise = importer(sceneLoaderUrl)
         .then(function (mod) {
           var sceneLoader = mod && (mod.SceneLoader || mod.default);
@@ -482,7 +525,7 @@
       if (STATE.gltfPatched) return Promise.resolve();
       if (STATE.gltfPatchPromise) return STATE.gltfPatchPromise;
       var importer = new Function("u", "return import(u);");
-      var gltfLoaderUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/loaders@8.46.2/glTF/2.0/glTFLoader.js/+esm";
+      var gltfLoaderUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/loaders@" + BABYLON_VERSION + "/glTF/2.0/glTFLoader.js/+esm";
       STATE.gltfPatchPromise = importer(gltfLoaderUrl)
         .then(function (mod) {
           var GLTFLoaderCtor = mod && (mod.GLTFLoader || mod.default);
@@ -521,8 +564,8 @@
       if (STATE.shaderRepo === repo && STATE.shaderPromise) return STATE.shaderPromise;
       STATE.shaderRepo = repo;
       var importer = new Function("u", "return import(u);");
-      var effectUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/core@8.46.2/Materials/effect.js/+esm";
-      var shaderStoreUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/core@8.46.2/Engines/shaderStore.js/+esm";
+      var effectUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/core@" + BABYLON_VERSION + "/Materials/effect.js/+esm";
+      var shaderStoreUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/core@" + BABYLON_VERSION + "/Engines/shaderStore.js/+esm";
       STATE.shaderPromise = Promise.all([
         importer(effectUrl).catch(function () { return null; }),
         importer(shaderStoreUrl).catch(function () { return null; })
@@ -779,17 +822,19 @@
       return;
     }
 
-    var observer = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (entry.isIntersecting) {
-          observer.disconnect();
-          STATE.observers.delete(observer);
-          loadPreview(blockInfo, config);
-        }
-      });
-    }, { rootMargin: "200px" });
-    observer.observe(blockInfo.block);
-    STATE.observers.add(observer);
+    if (!STATE.sharedObserver) {
+      STATE.sharedObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            STATE.sharedObserver.unobserve(entry.target);
+            var target = entry.target.__dmvBlockInfo;
+            if (target) loadPreview(target, config);
+          }
+        });
+      }, { rootMargin: "200px" });
+    }
+    blockInfo.block.__dmvBlockInfo = blockInfo;
+    STATE.sharedObserver.observe(blockInfo.block);
     blockInfo.viewer.textContent = "Preview will load when visible.";
   }
 
@@ -802,10 +847,25 @@
       }
     });
     STATE.observers.clear();
+    if (STATE.sharedObserver) {
+      try {
+        STATE.sharedObserver.disconnect();
+      } catch (err) {
+        // ignore
+      }
+      STATE.sharedObserver = null;
+    }
     STATE.instances.forEach(function (instance) {
       unmountViewer(instance);
     });
     STATE.instances.clear();
+  }
+
+  function warmRuntime(config) {
+    if (STATE.runtimeWarm) return;
+    STATE.runtimeWarm = true;
+    var schedule = window.requestIdleCallback || function (cb) { return setTimeout(cb, 300); };
+    schedule(function () { ensureRuntime(config); });
   }
 
   function processContainer(container, config) {
@@ -813,12 +873,14 @@
     ensureStyle();
 
     var anchors = Array.prototype.slice.call(container.querySelectorAll("a[href]"));
+    var found = false;
     anchors.forEach(function (anchor) {
       if (anchor.dataset.dmvProcessed === "true") return;
       if (anchor.closest(".dmv-block")) return;
 
       var href = anchor.getAttribute("href") || "";
       if (!isSupportedFormat(href, config)) return;
+      found = true;
 
       var blockInfo = buildBlock(anchor, config);
       anchor.dataset.dmvProcessed = "true";
@@ -831,6 +893,7 @@
 
       attachLazy(blockInfo, config);
     });
+    if (found) warmRuntime(config);
   }
 
   function plugin(hook, vm) {

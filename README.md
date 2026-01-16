@@ -68,7 +68,29 @@ window.$docsify = {
 		downloadLabel: "Download",
 		showOpen: false,
 		viewerConfig: null,
-		debug: false
+		debug: false,
+		silent: true,
+		runtimeUrls: ["./vendor/babylon-viewer.esm.min.js"]
 	}
-}
+};
 ```
+
+## Local Viewer Bundle (Optional)
+
+To use a local Babylon Viewer bundle (with CDN fallback), run:
+
+```bash
+./scripts/fetch-viewer.sh
+```
+
+Then add this to your Docsify config (optional override):
+
+```js
+window.$docsify = {
+  modelViewer: {
+    runtimeUrls: ["./vendor/babylon-viewer.esm.min.js"]
+  }
+};
+```
+
+The plugin will attempt local URLs first and fall back to the public CDN if the local bundle is missing.
