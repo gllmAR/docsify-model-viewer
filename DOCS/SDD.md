@@ -205,6 +205,12 @@ This guarantees:
 * Uses `<babylon-viewer>` custom element
 * Delegates rendering, controls, lifecycle to Babylon
 
+#### 5.6.2 Viewer Capabilities (V2)
+
+* Dynamically imports loaders based on model format.
+* Selects WebGL or WebGPU automatically.
+* Suspends rendering when offscreen to save power.
+
 #### 5.6.1 Runtime Strategy
 
 * Runtime is loaded once via dynamic `<script>` injection

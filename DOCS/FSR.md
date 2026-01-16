@@ -98,6 +98,10 @@ When `mode: "augment"`, the original link MUST be preserved and the preview bloc
 * The default backend MUST be **Babylon Viewer (V2)**.
 * The plugin MUST automatically load the Babylon Viewer runtime when required.
 
+### FR-4.2 — Viewer Capabilities Alignment
+
+The integration MUST remain compatible with Babylon Viewer V2 features such as dynamic loader imports and automatic WebGL/WebGPU engine selection.
+
 ### FR-4.1 — Runtime Loading Constraints
 
 The runtime loader MUST be cached so multiple previews do not trigger duplicate loads.
