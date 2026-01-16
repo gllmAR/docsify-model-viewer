@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>docsify-model-viewer demo</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify/dist/themes/core.min.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify/dist/themes/addons/core-dark.min.css" media="(prefers-color-scheme: dark)" />
+  </head>
+  <body class="sidebar-chevron-right">
+    <div id="app"></div>
+    <script>
+      window.$docsify = {
+        name: "docsify-model-viewer",
+        repo: "gllmAR/docsify-model-viewer",
+        loadSidebar: false,
+        modelViewer: {
+          height: "420px",
+          lazy: "visible",
+          showOpen: true,
+          debug: true
+        }
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/docsify/dist/docsify.min.js"></script>
+    <script src="./docsify-model-viewer.js"></script>
+    <!-- <script src="https://gllmar.github.io/docsify-model-viewer/docsify-model-viewer.js"></script> -->
+  </body>
+</html>
