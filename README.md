@@ -4,11 +4,11 @@ Docsify plugin that converts standard Markdown links to supported 3D models into
 
 [Acrobatic Plane glb](./samples/babylonjs/acrobaticPlane_variants.glb)
 
-## Quick Start (Docsify v5)
+## Quick Start (Docsify)
 
 ```html
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@5/dist/themes/core.min.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@5/dist/themes/addons/core-dark.min.css" media="(prefers-color-scheme: dark)">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify/dist/themes/core.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify/dist/themes/addons/core-dark.min.css" media="(prefers-color-scheme: dark)">
 
 <script>
 	window.$docsify = {
@@ -21,7 +21,7 @@ Docsify plugin that converts standard Markdown links to supported 3D models into
 	};
 </script>
 
-<script src="https://cdn.jsdelivr.net/npm/docsify@5/dist/docsify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/docsify/dist/docsify.min.js"></script>
 <script src="https://gllmar.github.io/docsify-model-viewer/docsify-model-viewer.js"></script>
 ```
 
