@@ -1,6 +1,8 @@
 /* docsify-model-viewer v1 */
 (function () {
   var BABYLON_VERSION = "8.46.2";
+  var LOCAL_SCENE_LOADER_URL = "./vendor/babylonjs-core/Loading/sceneLoader.js";
+  var LOCAL_GLTF_LOADER_URL = "./vendor/babylonjs-loaders/glTF/2.0/glTFLoader.js";
   var DEFAULTS = {
     enabled: true,
     formats: ["stl", "gltf", "glb", "obj", "ply", "babylon"],
@@ -12,6 +14,11 @@
     downloadLabel: "Download",
     showOpen: false,
     runtimeUrls: ["./vendor/babylon-viewer.esm.min.js"],
+    loaderUrls: {
+      sceneLoader: LOCAL_SCENE_LOADER_URL,
+      gltfLoader: LOCAL_GLTF_LOADER_URL
+    },
+    allowCdnFallback: true,
     silent: true,
     shaderRepository: "https://cdn.jsdelivr.net/gh/BabylonJS/Babylon.js@v" + BABYLON_VERSION + "/packages/dev/core/src/Shaders/",
     shaderRepositoryWgsl: "https://cdn.jsdelivr.net/gh/BabylonJS/Babylon.js@v" + BABYLON_VERSION + "/packages/dev/core/src/ShadersWGSL/",
@@ -23,6 +30,8 @@
   };
 
   var RUNTIME_MODULE_URLS = "https://cdn.jsdelivr.net/npm/@babylonjs/viewer@" + BABYLON_VERSION + "/dist/babylon-viewer.esm.min.js";
+  var SCENE_LOADER_CDN_URL = "https://cdn.jsdelivr.net/npm/@babylonjs/core@" + BABYLON_VERSION + "/Loading/sceneLoader.js/+esm";
+  var GLTF_LOADER_CDN_URL = "https://cdn.jsdelivr.net/npm/@babylonjs/loaders@" + BABYLON_VERSION + "/glTF/2.0/glTFLoader.js/+esm";
 
   var STATE = {
     observers: new Set(),
@@ -41,7 +50,12 @@
     gltfPatched: false,
     runtimeWarm: false,
     configKey: null,
-    configCache: null
+    configCache: null,
+    lazyQueue: new Set(),
+    lazyFallbackHandler: null,
+    lazyFallbackScheduled: false,
+    lazyFallbackInterval: null,
+    lazyFallbackContainers: null
   };
 
   function logDebug(config, message, data) {
@@ -142,6 +156,22 @@
     if (!Array.isArray(config.runtimeUrls)) {
       config.runtimeUrls = DEFAULTS.runtimeUrls.slice();
     }
+    if (!config.loaderUrls || typeof config.loaderUrls !== "object") {
+      config.loaderUrls = {
+        sceneLoader: DEFAULTS.loaderUrls.sceneLoader,
+        gltfLoader: DEFAULTS.loaderUrls.gltfLoader
+      };
+    } else {
+      if (!config.loaderUrls.sceneLoader) {
+        config.loaderUrls.sceneLoader = DEFAULTS.loaderUrls.sceneLoader;
+      }
+      if (!config.loaderUrls.gltfLoader) {
+        config.loaderUrls.gltfLoader = DEFAULTS.loaderUrls.gltfLoader;
+      }
+    }
+    if (typeof config.allowCdnFallback !== "boolean") {
+      config.allowCdnFallback = DEFAULTS.allowCdnFallback;
+    }
     if (!config.gltf || typeof config.gltf !== "object") {
       config.gltf = DEFAULTS.gltf;
     }
@@ -174,24 +204,78 @@
     return config.formats.indexOf(ext) !== -1;
   }
 
-  function resolveModelUrl(href) {
+  function getDocsifyRoutePath() {
     try {
-      if (href && href.startsWith("#")) {
-        var base = window.location.href.split("#")[0];
+      if (window.$docsify) {
+        if (window.$docsify.route && typeof window.$docsify.route.path === "string") {
+          return window.$docsify.route.path;
+        }
+        if (window.$docsify.router && typeof window.$docsify.router.getCurrentPath === "function") {
+          return window.$docsify.router.getCurrentPath();
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+    return "";
+  }
+
+  function normalizeRouteBase(path) {
+    if (!path) return "";
+    var clean = String(path).split("?")[0].split("#")[0];
+    var mdIndex = clean.toLowerCase().lastIndexOf(".md");
+    if (mdIndex !== -1) {
+      var cut = clean.lastIndexOf("/");
+      clean = cut !== -1 ? clean.slice(0, cut + 1) : "";
+    }
+    if (clean && !clean.endsWith("/")) clean += "/";
+    if (clean.startsWith("/")) clean = clean.slice(1);
+    return clean;
+  }
+
+  function resolveModelUrl(href, routePath) {
+    try {
+      if (!href) return href;
+      var originBase = window.location.href.split("#")[0];
+      var docsifyRoute = normalizeRouteBase(routePath || getDocsifyRoutePath());
+      var hash = window.location.hash || "";
+      var hashRoute = hash.startsWith("#") ? hash.slice(1) : hash;
+      hashRoute = normalizeRouteBase(hashRoute);
+      var routeBase = originBase + (docsifyRoute || hashRoute || "");
+      if (href.indexOf("#/") === 0) {
+        var hashTarget = href.slice(2);
+        if (hashTarget.startsWith("/")) hashTarget = hashTarget.slice(1);
+        return new URL(hashTarget, routeBase || originBase).toString();
+      }
+      if (href.startsWith("#")) {
         var target = normalizeHrefForDetection(href);
         if (!target) return href;
-        return new URL(target, base).toString();
+        return new URL(target, originBase).toString();
       }
-      return new URL(href, window.location.href).toString();
+      if (/^(https?:)?\/\//i.test(href)) {
+        return new URL(href, originBase).toString();
+      }
+      if (href.startsWith("/")) {
+        if (docsifyRoute && href.indexOf("/" + docsifyRoute) !== 0) {
+          return new URL(docsifyRoute + href.slice(1), originBase).toString();
+        }
+        return new URL(href, originBase).toString();
+      }
+      return new URL(href, routeBase || originBase).toString();
     } catch (err) {
       return href;
     }
   }
 
-  function buildBlock(anchor, config) {
+  function buildBlock(anchor, config, routePath) {
     var href = anchor.getAttribute("href") || "";
     var title = (anchor.textContent || "").trim() || href;
-    var url = resolveModelUrl(href);
+    var url = resolveModelUrl(href, routePath);
+    logDebug(config, "resolve link", {
+      href: href,
+      routePath: routePath || "",
+      resolved: url
+    });
 
     var block = document.createElement("div");
     block.className = "dmv-block";
@@ -337,6 +421,13 @@
   function tryImportModule(urls) {
     try {
       var importer = new Function("u", "return import(u);");
+      if (Array.isArray(urls)) {
+        return urls.reduce(function (prev, url) {
+          return prev.catch(function () {
+            return importer(url);
+          });
+        }, Promise.reject(new Error("No module URL")));
+      }
       return importer(urls);
     } catch (err) {
       return null;
@@ -384,6 +475,27 @@
       if (url && typeof url === "string") urls.push(url);
     });
     urls.push(RUNTIME_MODULE_URLS);
+    return urls;
+  }
+
+  function normalizeUrlList(value) {
+    if (Array.isArray(value)) {
+      return value.filter(function (url) {
+        return url && typeof url === "string";
+      });
+    }
+    if (value && typeof value === "string") return [value];
+    return [];
+  }
+
+  function getLoaderUrls(config, key) {
+    var urls = normalizeUrlList(config && config.loaderUrls && config.loaderUrls[key]);
+    if (!urls.length) {
+      urls = normalizeUrlList(DEFAULTS.loaderUrls[key]);
+    }
+    if (config && config.allowCdnFallback === false) return urls;
+    var cdn = key === "sceneLoader" ? SCENE_LOADER_CDN_URL : GLTF_LOADER_CDN_URL;
+    if (cdn && urls.indexOf(cdn) === -1) urls.push(cdn);
     return urls;
   }
 
@@ -497,9 +609,13 @@
         return Promise.resolve();
       }
 
-      var importer = new Function("u", "return import(u);");
-      var sceneLoaderUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/core@" + BABYLON_VERSION + "/Loading/sceneLoader.js/+esm";
-      STATE.loaderPromise = importer(sceneLoaderUrl)
+      var sceneLoaderUrls = getLoaderUrls(config, "sceneLoader");
+      var modulePromise = tryImportModule(sceneLoaderUrls);
+      if (!modulePromise) {
+        STATE.loaderReady = true;
+        return Promise.resolve();
+      }
+      STATE.loaderPromise = modulePromise
         .then(function (mod) {
           var sceneLoader = mod && (mod.SceneLoader || mod.default);
           installObserver(sceneLoader);
@@ -524,9 +640,13 @@
       }
       if (STATE.gltfPatched) return Promise.resolve();
       if (STATE.gltfPatchPromise) return STATE.gltfPatchPromise;
-      var importer = new Function("u", "return import(u);");
-      var gltfLoaderUrl = "https://cdn.jsdelivr.net/npm/@babylonjs/loaders@" + BABYLON_VERSION + "/glTF/2.0/glTFLoader.js/+esm";
-      STATE.gltfPatchPromise = importer(gltfLoaderUrl)
+      var gltfLoaderUrls = getLoaderUrls(config, "gltfLoader");
+      var modulePromise = tryImportModule(gltfLoaderUrls);
+      if (!modulePromise) {
+        STATE.gltfPatched = true;
+        return Promise.resolve();
+      }
+      STATE.gltfPatchPromise = modulePromise
         .then(function (mod) {
           var GLTFLoaderCtor = mod && (mod.GLTFLoader || mod.default);
           if (!GLTFLoaderCtor || !GLTFLoaderCtor.prototype) return;
@@ -754,6 +874,9 @@
   function loadPreview(blockInfo, config) {
     if (blockInfo.block.getAttribute("data-dmv-loaded") === "true") return;
     blockInfo.block.setAttribute("data-dmv-loaded", "true");
+    if (STATE.lazyQueue && STATE.lazyQueue.size) {
+      STATE.lazyQueue.delete(blockInfo.block);
+    }
     setStatus(blockInfo.status, "Loading preview...");
     ensureRuntime(config)
       .then(function () {
@@ -835,7 +958,101 @@
     }
     blockInfo.block.__dmvBlockInfo = blockInfo;
     STATE.sharedObserver.observe(blockInfo.block);
+    STATE.lazyQueue.add(blockInfo.block);
+    ensureLazyFallback(config);
     blockInfo.viewer.textContent = "Preview will load when visible.";
+  }
+
+  function ensureLazyFallback(config) {
+    if (STATE.lazyFallbackHandler) return;
+    STATE.lazyFallbackHandler = function () {
+      scheduleLazyCheck(config);
+    };
+    var containers = [];
+    try {
+      containers.push(window);
+    } catch (err) {
+      // ignore
+    }
+    try {
+      if (document) {
+        containers.push(document);
+        if (document.body) containers.push(document.body);
+        if (document.documentElement) containers.push(document.documentElement);
+      }
+    } catch (err) {
+      // ignore
+    }
+    try {
+      var content = document.querySelector(".content");
+      if (content) containers.push(content);
+    } catch (err) {
+      // ignore
+    }
+    STATE.lazyFallbackContainers = containers;
+    try {
+      window.addEventListener("scroll", STATE.lazyFallbackHandler, { passive: true });
+      window.addEventListener("resize", STATE.lazyFallbackHandler);
+      document.addEventListener("scroll", STATE.lazyFallbackHandler, true);
+    } catch (err) {
+      // ignore
+    }
+    containers.forEach(function (container) {
+      if (!container || container === window || container === document) return;
+      try {
+        container.addEventListener("scroll", STATE.lazyFallbackHandler, { passive: true });
+      } catch (err) {
+        // ignore
+      }
+    });
+    if (!STATE.lazyFallbackInterval) {
+      STATE.lazyFallbackInterval = setInterval(function () {
+        checkLazyQueue(config);
+      }, 500);
+    }
+    scheduleLazyCheck(config);
+  }
+
+  function scheduleLazyCheck(config) {
+    if (STATE.lazyFallbackScheduled) return;
+    STATE.lazyFallbackScheduled = true;
+    var schedule = window.requestAnimationFrame || function (cb) { return setTimeout(cb, 16); };
+    schedule(function () {
+      STATE.lazyFallbackScheduled = false;
+      checkLazyQueue(config);
+    });
+  }
+
+  function checkLazyQueue(config) {
+    if (!STATE.lazyQueue || !STATE.lazyQueue.size) return;
+    var margin = 200;
+    var items = Array.from(STATE.lazyQueue);
+    items.forEach(function (el) {
+      if (!el || !el.isConnected) {
+        STATE.lazyQueue.delete(el);
+        return;
+      }
+      if (isElementVisible(el, margin)) {
+        var info = el.__dmvBlockInfo;
+        if (info) loadPreview(info, config);
+      }
+    });
+    if (!STATE.lazyQueue.size && STATE.lazyFallbackInterval) {
+      clearInterval(STATE.lazyFallbackInterval);
+      STATE.lazyFallbackInterval = null;
+    }
+  }
+
+  function isElementVisible(element, margin) {
+    try {
+      var rect = element.getBoundingClientRect();
+      var windowHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+      var windowWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+      var m = typeof margin === "number" ? margin : 0;
+      return rect.bottom >= -m && rect.right >= -m && rect.top <= windowHeight + m && rect.left <= windowWidth + m;
+    } catch (err) {
+      return false;
+    }
   }
 
   function cleanup() {
@@ -855,6 +1072,33 @@
       }
       STATE.sharedObserver = null;
     }
+    if (STATE.lazyFallbackHandler) {
+      try {
+        window.removeEventListener("scroll", STATE.lazyFallbackHandler);
+        window.removeEventListener("resize", STATE.lazyFallbackHandler);
+        document.removeEventListener("scroll", STATE.lazyFallbackHandler, true);
+      } catch (err) {
+        // ignore
+      }
+      if (STATE.lazyFallbackContainers && STATE.lazyFallbackContainers.length) {
+        STATE.lazyFallbackContainers.forEach(function (container) {
+          if (!container || container === window || container === document) return;
+          try {
+            container.removeEventListener("scroll", STATE.lazyFallbackHandler);
+          } catch (err) {
+            // ignore
+          }
+        });
+      }
+      STATE.lazyFallbackHandler = null;
+    }
+    STATE.lazyFallbackScheduled = false;
+    if (STATE.lazyFallbackInterval) {
+      clearInterval(STATE.lazyFallbackInterval);
+      STATE.lazyFallbackInterval = null;
+    }
+    STATE.lazyFallbackContainers = null;
+    STATE.lazyQueue.clear();
     STATE.instances.forEach(function (instance) {
       unmountViewer(instance);
     });
@@ -868,7 +1112,7 @@
     schedule(function () { ensureRuntime(config); });
   }
 
-  function processContainer(container, config) {
+  function processContainer(container, config, routePath) {
     if (!container) return;
     ensureStyle();
 
@@ -882,7 +1126,7 @@
       if (!isSupportedFormat(href, config)) return;
       found = true;
 
-      var blockInfo = buildBlock(anchor, config);
+      var blockInfo = buildBlock(anchor, config, routePath);
       anchor.dataset.dmvProcessed = "true";
 
       if (config.mode === "augment") {
@@ -906,7 +1150,16 @@
       var config = getConfig();
       if (!config.enabled) return;
       var container = document.querySelector(".content") || document.getElementById("main") || document.body;
-      processContainer(container, config);
+      var routePath = "";
+      if (vm && vm.route) {
+        if (typeof vm.route.path === "string") routePath = vm.route.path;
+        else if (typeof vm.route.file === "string") routePath = vm.route.file;
+      }
+      if (!routePath) {
+        var hash = window.location.hash || "";
+        if (hash.indexOf("#/") === 0) routePath = hash.slice(1);
+      }
+      processContainer(container, config, routePath);
     });
   }
 

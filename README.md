@@ -43,7 +43,7 @@ Supported extensions (case-insensitive):
 
 ## Babylon Viewer (V2) Notes
 
-This plugin uses the Babylon Viewer V2 custom element (`<babylon-viewer>`) via the public CDN runtime:
+This plugin uses the Babylon Viewer V2 custom element (`<babylon-viewer>`) via the public CDN runtime by default (you can switch to local runtime + loaders below):
 
 * The Viewer dynamically loads format loaders on demand.
 * WebGL/WebGPU engines are supported and selected automatically.
@@ -70,27 +70,41 @@ window.$docsify = {
 		viewerConfig: null,
 		debug: false,
 		silent: true,
-		runtimeUrls: ["./vendor/babylon-viewer.esm.min.js"]
+		runtimeUrls: ["./vendor/babylon-viewer.esm.min.js"],
+		loaderUrls: {
+			sceneLoader: "./vendor/babylonjs-core/Loading/sceneLoader.js",
+			gltfLoader: "./vendor/babylonjs-loaders/glTF/2.0/glTFLoader.js"
+		},
+		allowCdnFallback: true
 	}
 };
 ```
 
 ## Local Viewer Bundle (Optional)
 
-To use a local Babylon Viewer bundle (with CDN fallback), run:
+To use a local Babylon Viewer bundle (with CDN fallback for loader helpers), run:
 
 ```bash
 ./scripts/fetch-viewer.sh
 ```
+
+This downloads the Viewer runtime plus the Babylon core/loaders packages into vendor/.
 
 Then add this to your Docsify config (optional override):
 
 ```js
 window.$docsify = {
   modelViewer: {
-    runtimeUrls: ["./vendor/babylon-viewer.esm.min.js"]
+		runtimeUrls: ["./vendor/babylon-viewer.esm.min.js"],
+		loaderUrls: {
+			sceneLoader: "./vendor/babylonjs-core/Loading/sceneLoader.js",
+			gltfLoader: "./vendor/babylonjs-loaders/glTF/2.0/glTFLoader.js"
+		},
+		allowCdnFallback: false
   }
 };
 ```
 
-The plugin will attempt local URLs first and fall back to the public CDN if the local bundle is missing.
+The plugin will attempt local URLs first and fall back to the public CDN if the local files are missing (unless `allowCdnFallback` is set to `false`).
+
+By default, vendor/ is gitignored. If you need fully offline/air‑gapped or self‑hosted assets, commit vendor/ and set `allowCdnFallback: false`.
