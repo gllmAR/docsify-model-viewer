@@ -249,11 +249,19 @@
       var hash = window.location.hash || "";
       var hashRoute = hash.startsWith("#") ? hash.slice(1) : hash;
       hashRoute = normalizeRouteBase(hashRoute);
-      var routeBase = originBase + (docsifyRoute || hashRoute || "");
+      var routePrefix = docsifyRoute || hashRoute || "";
+      var routeBase = originBase + routePrefix;
+      var hasRoutePrefix = function (target) {
+        return !!(routePrefix && target && target.indexOf(routePrefix) === 0);
+      };
       if (href.indexOf("#/") === 0) {
         var hashTarget = href.slice(2);
         if (hashTarget.startsWith("/")) hashTarget = hashTarget.slice(1);
-        return new URL(hashTarget, routeBase || originBase).toString();
+        var baseForHash = routeBase || originBase;
+        if (hasRoutePrefix(hashTarget)) {
+          baseForHash = originBase;
+        }
+        return new URL(hashTarget, baseForHash).toString();
       }
       if (href.startsWith("#")) {
         var target = normalizeHrefForDetection(href);
@@ -269,7 +277,11 @@
         }
         return new URL(href, originBase).toString();
       }
-      return new URL(href, routeBase || originBase).toString();
+      var baseForRelative = routeBase || originBase;
+      if (hasRoutePrefix(href)) {
+        baseForRelative = originBase;
+      }
+      return new URL(href, baseForRelative).toString();
     } catch (err) {
       return href;
     }
