@@ -1,2 +1,3 @@
 # Optional local Babylon bundles
 vendor/
+.DS_Store

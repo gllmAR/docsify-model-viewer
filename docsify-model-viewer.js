@@ -25,6 +25,7 @@
     gltf: {
       loadNodeAnimations: false
     },
+    disableEnvironment: true,
     viewerConfig: null,
     debug: false
   };
@@ -36,6 +37,8 @@
   var STATE = {
     observers: new Set(),
     sharedObserver: null,
+    sharedObserverRoot: null,
+    sharedObserverViewport: null,
     instances: new Set(),
     runtimePromise: null,
     shaderPromise: null,
@@ -55,7 +58,9 @@
     lazyFallbackHandler: null,
     lazyFallbackScheduled: false,
     lazyFallbackInterval: null,
-    lazyFallbackContainers: null
+    lazyFallbackContainers: null,
+    lazyInlineHandlers: [],
+    lazyObservers: new Map()
   };
 
   function logDebug(config, message, data) {
@@ -174,6 +179,9 @@
     }
     if (!config.gltf || typeof config.gltf !== "object") {
       config.gltf = DEFAULTS.gltf;
+    }
+    if (typeof config.disableEnvironment !== "boolean") {
+      config.disableEnvironment = DEFAULTS.disableEnvironment;
     }
     if (key) {
       STATE.configKey = key;
@@ -821,6 +829,12 @@
     if (optionsOverride && typeof optionsOverride === "object") {
       options = Object.assign(options || {}, optionsOverride);
     }
+    if (config.disableEnvironment) {
+      options = Object.assign(options || {}, {
+        environmentLighting: "none",
+        environmentSkybox: "none"
+      });
+    }
     if (options) {
       try {
         viewer.viewerOptions = options;
@@ -846,17 +860,33 @@
       }
       setStatus(statusEl, "Failed to load preview.");
     }, { once: true });
-    viewer.addEventListener("viewerready", function () {
+    viewer.addEventListener("viewerready", function (event) {
+      if (config.disableEnvironment) {
+        try {
+          var detail = event && event.detail;
+          var scene = (detail && (detail.scene || (detail.viewer && detail.viewer.scene))) || viewer.scene || (viewer.viewer && viewer.viewer.scene);
+          if (scene && scene.environmentTexture) {
+            scene.environmentTexture = null;
+          }
+        } catch (err) {
+          // ignore
+        }
+      }
       setStatus(statusEl, "");
     }, { once: true });
     viewer.style.width = "100%";
     viewer.style.height = "100%";
     container.innerHTML = "";
     container.appendChild(viewer);
-    configureLoaderOptions(config, window.BABYLON).then(function () {
+    var applySource = function () {
       if (!viewer.isConnected) return;
       viewer.setAttribute("source", pendingUrl);
       viewer.setAttribute("src", pendingUrl);
+      logDebug(config, "set source", { url: pendingUrl });
+    };
+    applySource();
+    configureLoaderOptions(config, window.BABYLON).then(function () {
+      applySource();
     });
     return viewer;
   }
@@ -873,10 +903,13 @@
 
   function loadPreview(blockInfo, config) {
     if (blockInfo.block.getAttribute("data-dmv-loaded") === "true") return;
-    blockInfo.block.setAttribute("data-dmv-loaded", "true");
-    if (STATE.lazyQueue && STATE.lazyQueue.size) {
-      STATE.lazyQueue.delete(blockInfo.block);
-    }
+    if (blockInfo.block.getAttribute("data-dmv-loading") === "true") return;
+    blockInfo.block.setAttribute("data-dmv-loading", "true");
+    logDebug(config, "loadPreview", {
+      url: blockInfo.url,
+      title: blockInfo.title,
+      lazy: config.lazy
+    });
     setStatus(blockInfo.status, "Loading preview...");
     ensureRuntime(config)
       .then(function () {
@@ -884,9 +917,15 @@
         if (!customElements || !customElements.get("babylon-viewer")) {
           setStatus(blockInfo.status, "Viewer runtime loaded but element is unavailable.");
           logDebug(config, "viewer element not defined", { url: blockInfo.url });
+          blockInfo.block.removeAttribute("data-dmv-loading");
           return;
         }
         var instance = mountViewer(blockInfo.viewer, blockInfo.url, config, blockInfo.status);
+        blockInfo.block.setAttribute("data-dmv-loaded", "true");
+        blockInfo.block.removeAttribute("data-dmv-loading");
+        if (STATE.lazyQueue && STATE.lazyQueue.size) {
+          STATE.lazyQueue.delete(blockInfo.block);
+        }
         if (blockInfo.fullscreen) {
           var fsAvailable = !!(blockInfo.viewer && blockInfo.viewer.requestFullscreen);
           if (!fsAvailable) {
@@ -910,6 +949,7 @@
       .catch(function (err) {
         setStatus(blockInfo.status, "Failed to load preview.");
         logDebug(config, "preview load failed", { url: blockInfo.url, error: err });
+        blockInfo.block.removeAttribute("data-dmv-loading");
       });
   }
 
@@ -945,22 +985,132 @@
       return;
     }
 
-    if (!STATE.sharedObserver) {
-      STATE.sharedObserver = new IntersectionObserver(function (entries) {
+    var root = getScrollParent(blockInfo.block);
+    logDebug(config, "attachLazy", {
+      url: blockInfo.url,
+      title: blockInfo.title,
+      root: root ? (root.className || root.id || root.tagName) : null
+    });
+    blockInfo.block.__dmvBlockInfo = blockInfo;
+    blockInfo.block.__dmvScrollParent = root || null;
+    var observer = getLazyObserver(root, config);
+    try {
+      observer.observe(blockInfo.block);
+    } catch (err) {
+      // ignore
+    }
+    var viewportObserver = getLazyObserver(null, config);
+    if (viewportObserver && viewportObserver !== observer) {
+      try {
+        viewportObserver.observe(blockInfo.block);
+      } catch (err) {
+        // ignore
+      }
+    }
+    STATE.lazyQueue.add(blockInfo.block);
+    ensureLazyFallback(config);
+    attachInlineLazyCheck(blockInfo, config);
+    blockInfo.viewer.textContent = "Preview will load when visible.";
+    scheduleLazyCheck(config);
+  }
+
+  function attachInlineLazyCheck(blockInfo, config) {
+    if (!blockInfo || !blockInfo.block) return;
+    var handler = function () {
+      if (!blockInfo.block || blockInfo.block.getAttribute("data-dmv-loaded") === "true") return;
+      var root = blockInfo.block.__dmvScrollParent || getScrollParent(blockInfo.block);
+      if (isElementVisible(blockInfo.block, 200, root || null)) {
+        loadPreview(blockInfo, config);
+      }
+    };
+    try {
+      window.addEventListener("scroll", handler, { passive: true });
+      window.addEventListener("resize", handler);
+      document.addEventListener("scroll", handler, true);
+      document.addEventListener("visibilitychange", handler);
+    } catch (err) {
+      // ignore
+    }
+    try {
+      var content = document.querySelector(".content");
+      if (content) content.addEventListener("scroll", handler, { passive: true });
+    } catch (err) {
+      // ignore
+    }
+    try {
+      var parent = blockInfo.block.__dmvScrollParent || getScrollParent(blockInfo.block);
+      if (parent) parent.addEventListener("scroll", handler, { passive: true });
+    } catch (err) {
+      // ignore
+    }
+    STATE.lazyInlineHandlers.push({ handler: handler, block: blockInfo.block });
+    handler();
+  }
+
+  function getLazyObserver(root, config) {
+    try {
+      var key = root || "__viewport__";
+      if (STATE.lazyObservers.has(key)) return STATE.lazyObservers.get(key);
+      var observer = new IntersectionObserver(function (entries) {
         entries.forEach(function (entry) {
           if (entry.isIntersecting) {
-            STATE.sharedObserver.unobserve(entry.target);
+            logDebug(config, "observer hit", {
+              url: entry.target && entry.target.__dmvBlockInfo && entry.target.__dmvBlockInfo.url,
+              root: root ? (root.className || root.id || root.tagName) : null
+            });
+            observer.unobserve(entry.target);
             var target = entry.target.__dmvBlockInfo;
             if (target) loadPreview(target, config);
           }
         });
-      }, { rootMargin: "200px" });
+      }, { root: root || null, rootMargin: "200px" });
+      STATE.lazyObservers.set(key, observer);
+      STATE.observers.add(observer);
+      return observer;
+    } catch (err) {
+      return null;
     }
-    blockInfo.block.__dmvBlockInfo = blockInfo;
-    STATE.sharedObserver.observe(blockInfo.block);
-    STATE.lazyQueue.add(blockInfo.block);
-    ensureLazyFallback(config);
-    blockInfo.viewer.textContent = "Preview will load when visible.";
+  }
+
+  function getScrollParent(element) {
+    if (!element) return null;
+    var current = element.parentElement;
+    while (current && current !== document.body && current !== document.documentElement) {
+      if (isScrollable(current)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  function getObserverRoot() {
+    try {
+      var content = document.querySelector(".content");
+      if (content && isScrollable(content)) return content;
+      var main = document.getElementById("main");
+      if (main && isScrollable(main)) return main;
+      var body = document.body;
+      if (body && isScrollable(body)) return body;
+      var docEl = document.documentElement;
+      if (docEl && isScrollable(docEl)) return docEl;
+    } catch (err) {
+      // ignore
+    }
+    return null;
+  }
+
+  function isScrollable(element) {
+    if (!element) return false;
+    try {
+      var style = window.getComputedStyle(element);
+      var overflowY = style.overflowY || style.overflow;
+      var overflowX = style.overflowX || style.overflow;
+      var canScrollY = /(auto|scroll|overlay)/.test(overflowY);
+      var canScrollX = /(auto|scroll|overlay)/.test(overflowX);
+      return (canScrollY && element.scrollHeight > element.clientHeight) ||
+        (canScrollX && element.scrollWidth > element.clientWidth);
+    } catch (err) {
+      return false;
+    }
   }
 
   function ensureLazyFallback(config) {
@@ -1032,7 +1182,17 @@
         STATE.lazyQueue.delete(el);
         return;
       }
-      if (isElementVisible(el, margin)) {
+      var root = el.__dmvScrollParent || getScrollParent(el) || null;
+      if (isNearBottom(root, margin)) {
+        logDebug(config, "lazy bottom trigger", { url: el.__dmvBlockInfo && el.__dmvBlockInfo.url });
+        var infoBottom = el.__dmvBlockInfo;
+        if (infoBottom) loadPreview(infoBottom, config);
+        return;
+      }
+      if (isElementVisible(el, margin, root)) {
+        logDebug(config, "lazy visible", {
+          url: el.__dmvBlockInfo && el.__dmvBlockInfo.url
+        });
         var info = el.__dmvBlockInfo;
         if (info) loadPreview(info, config);
       }
@@ -1043,13 +1203,51 @@
     }
   }
 
-  function isElementVisible(element, margin) {
+  function isElementVisible(element, margin, root) {
     try {
       var rect = element.getBoundingClientRect();
       var windowHeight = window.innerHeight || document.documentElement.clientHeight || 0;
       var windowWidth = window.innerWidth || document.documentElement.clientWidth || 0;
       var m = typeof margin === "number" ? margin : 0;
+      if (root && root !== window && root !== document) {
+        var rootRect = null;
+        try {
+          if (root.getBoundingClientRect) rootRect = root.getBoundingClientRect();
+        } catch (err) {
+          rootRect = null;
+        }
+        if (rootRect) {
+          return rect.bottom >= rootRect.top - m &&
+            rect.right >= rootRect.left - m &&
+            rect.top <= rootRect.bottom + m &&
+            rect.left <= rootRect.right + m;
+        }
+      }
       return rect.bottom >= -m && rect.right >= -m && rect.top <= windowHeight + m && rect.left <= windowWidth + m;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function isNearBottom(root, margin) {
+    var m = typeof margin === "number" ? margin : 0;
+    try {
+      if (root && root !== window && root !== document) {
+        var clientHeight = root.clientHeight || 0;
+        var scrollHeight = root.scrollHeight || 0;
+        var scrollTop = root.scrollTop || 0;
+        return scrollHeight - (scrollTop + clientHeight) <= m;
+      }
+    } catch (err) {
+      // ignore
+    }
+    try {
+      var docEl = document.documentElement || {};
+      var body = document.body || {};
+      var scrollTopWin = window.pageYOffset || docEl.scrollTop || body.scrollTop || 0;
+      var clientHeightWin = window.innerHeight || docEl.clientHeight || body.clientHeight || 0;
+      var scrollHeightWin = Math.max(docEl.scrollHeight || 0, body.scrollHeight || 0);
+      return scrollHeightWin - (scrollTopWin + clientHeightWin) <= m;
     } catch (err) {
       return false;
     }
@@ -1071,6 +1269,15 @@
         // ignore
       }
       STATE.sharedObserver = null;
+      STATE.sharedObserverRoot = null;
+    }
+    if (STATE.sharedObserverViewport) {
+      try {
+        STATE.sharedObserverViewport.disconnect();
+      } catch (err) {
+        // ignore
+      }
+      STATE.sharedObserverViewport = null;
     }
     if (STATE.lazyFallbackHandler) {
       try {
@@ -1099,6 +1306,26 @@
     }
     STATE.lazyFallbackContainers = null;
     STATE.lazyQueue.clear();
+    if (STATE.lazyInlineHandlers && STATE.lazyInlineHandlers.length) {
+      STATE.lazyInlineHandlers.forEach(function (entry) {
+        try {
+          window.removeEventListener("scroll", entry.handler);
+          window.removeEventListener("resize", entry.handler);
+          document.removeEventListener("scroll", entry.handler, true);
+          document.removeEventListener("visibilitychange", entry.handler);
+          var content = document.querySelector(".content");
+          if (content) content.removeEventListener("scroll", entry.handler);
+          var parent = entry.block && entry.block.__dmvScrollParent;
+          if (parent) parent.removeEventListener("scroll", entry.handler);
+        } catch (err) {
+          // ignore
+        }
+      });
+    }
+    STATE.lazyInlineHandlers = [];
+    if (STATE.lazyObservers && STATE.lazyObservers.size) {
+      STATE.lazyObservers.clear();
+    }
     STATE.instances.forEach(function (instance) {
       unmountViewer(instance);
     });
@@ -1137,7 +1364,7 @@
 
       attachLazy(blockInfo, config);
     });
-    if (found) warmRuntime(config);
+    if (found && config.lazy === "none") warmRuntime(config);
   }
 
   function plugin(hook, vm) {
